@@ -114,8 +114,17 @@ final class Store: ObservableObject {
     func paste(_ c: Clip, plain: Bool = false) {
         if plain { c.writePlain(to: .general) } else { c.write(to: .general) }
         lastChange = NSPasteboard.general.changeCount
-        Shelf.shared.hide()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+        let target = Shelf.shared.prevApp
+        Shelf.shared.hide(restoreFocus: false)
+        // re-activate the app the user was in, then inject ⌘V
+        target?.activate(options: .activateIgnoringOtherApps)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            if !AXIsProcessTrusted() {
+                let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+                _ = AXIsProcessTrustedWithOptions(opts)
+                NSLog("clipdeck: paste needs Accessibility — showing prompt")
+                return
+            }
             let src = CGEventSource(stateID: .hidSystemState)
             let down = CGEvent(keyboardEventSource: src, virtualKey: 9, keyDown: true)
             let up   = CGEvent(keyboardEventSource: src, virtualKey: 9, keyDown: false)
@@ -202,7 +211,7 @@ final class Shelf: NSWindow {
         }
     }
 
-    func hide() {
+    func hide(restoreFocus: Bool = true) {
         shown = false
         if let m = keyMon { NSEvent.removeMonitor(m); keyMon = nil }
         Store.shared.query = ""
@@ -211,7 +220,9 @@ final class Shelf: NSWindow {
             animator().alphaValue = 0
         } completionHandler: {
             self.orderOut(nil)
-            if let app = self.prevApp { app.activate(options: .activateIgnoringOtherApps) }
+            if restoreFocus, let app = self.prevApp {
+                app.activate(options: .activateIgnoringOtherApps)
+            }
         }
     }
 
