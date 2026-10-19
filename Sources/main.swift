@@ -81,6 +81,21 @@ struct Clip: Identifiable, Codable {
             pb.writeObjects(paths.map { NSURL(fileURLWithPath: $0) } as [NSPasteboardWriting])
         }
     }
+    /// Content-level equality — preview is NOT enough (all images preview "Image").
+    func sameContent(as o: Clip) -> Bool {
+        switch (kind, o.kind) {
+        case (.text(let a), .text(let b)):   return a == b
+        case (.file(let a), .file(let b)):   return a == b
+        case (.image(let a), .image(let b)): return a == b
+        case (.imageRef(let n), .image(let d)): return (try? Data(contentsOf:
+            Store.imagesDir.appendingPathComponent(n))) == d
+        case (.image(let d), .imageRef(let n)): return d == (try? Data(contentsOf:
+            Store.imagesDir.appendingPathComponent(n)))
+        case (.imageRef(let a), .imageRef(let b)): return a == b
+        default: return false
+        }
+    }
+
     func writePlain(to pb: NSPasteboard) {
         pb.clearContents()
         pb.setString(preview, forType: .string)
@@ -131,8 +146,10 @@ struct Clip: Identifiable, Codable {
         case .text(let t):  try c.encode("text", forKey: .type); try c.encode(t, forKey: .payload)
         case .file(let f):  try c.encode("file", forKey: .type); try c.encode(f, forKey: .payload)
         case .image(let d):
-            let name = id.uuidString + ".tiff"
-            try? d.write(to: Store.imagesDir.appendingPathComponent(name))
+            let name = id.uuidString + ".png"
+            if let img = NSImage(data: d), let png = img.pngData {
+                try? png.write(to: Store.imagesDir.appendingPathComponent(name))
+            }
             try c.encode("image", forKey: .type); try c.encode(name, forKey: .payload)
         case .imageRef(let n):
             try c.encode("image", forKey: .type); try c.encode(n, forKey: .payload)
@@ -157,6 +174,7 @@ final class ThumbCache {
         cache[c.id] = t
         return t
     }
+    func drop(id: UUID) { cache.removeValue(forKey: id) }
 }
 
 final class Store: ObservableObject {
@@ -215,6 +233,8 @@ final class Store: ObservableObject {
     }
     func flushNow() { flushWork?.cancel(); writeNow() }
     private func writeNow() {
+        try? FileManager.default.createDirectory(at: Store.imagesDir,
+                                                 withIntermediateDirectories: true)
         let data = try? JSONEncoder().encode(items)
         guard let data else { return }
         let tmp = Store.historyURL.appendingPathExtension("tmp")
@@ -251,12 +271,12 @@ final class Store: ObservableObject {
         guard var c = clip else { return }
         c.sourceAppBundleID = front?.bundleIdentifier
         c.appName = front?.localizedName ?? ""
-        if let i = items.firstIndex(where: { $0.preview == c.preview }) { items.remove(at: i) }
+        if let i = items.firstIndex(where: { $0.sameContent(as: c) }) { items.remove(at: i) }
         items.insert(c, at: 0)
         let unpinned = items.filter { !$0.pinned }
         if unpinned.count > capacity, let last = unpinned.last,
            let idx = items.firstIndex(where: { $0.id == last.id }) {
-            items.remove(at: idx)
+            removeItem(at: idx)
         }
         flush()
     }
@@ -265,8 +285,36 @@ final class Store: ObservableObject {
         if let i = items.firstIndex(where: { $0.id == c.id }) { items[i].pinned.toggle() }
         flush()
     }
-    func delete(_ c: Clip) { items.removeAll { $0.id == c.id }; flush() }
-    func clearUnpinned() { items.removeAll { !$0.pinned }; flush() }
+    func delete(_ c: Clip) {
+        items.removeAll { $0.id == c.id }
+        deleteImageFile(for: c)
+        ThumbCache.shared.drop(id: c.id)
+        flush()
+    }
+    func clearUnpinned() {
+        let doomed = items.filter { !$0.pinned }
+        items.removeAll { !$0.pinned }
+        doomed.forEach { deleteImageFile(for: $0); ThumbCache.shared.drop(id: $0.id) }
+        flush()
+    }
+    private func removeItem(at i: Int) {
+        let c = items[i]
+        items.remove(at: i)
+        deleteImageFile(for: c)
+        ThumbCache.shared.drop(id: c.id)
+    }
+    private func deleteImageFile(for c: Clip) {
+        // .imageRef → delete named file; .image → file may exist from an
+        // earlier flush (kind not yet reloaded as ref) — remove id.png too.
+        if case .imageRef(let n) = c.kind {
+            try? FileManager.default.removeItem(
+                at: Store.imagesDir.appendingPathComponent(n))
+        }
+        if case .image = c.kind {
+            try? FileManager.default.removeItem(
+                at: Store.imagesDir.appendingPathComponent(c.id.uuidString + ".png"))
+        }
+    }
 
     func paste(_ c: Clip, plain: Bool = false) {
         if plain { c.writePlain(to: .general) } else { c.write(to: .general) }
