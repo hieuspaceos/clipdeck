@@ -805,7 +805,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWin?.makeKeyAndOrderFront(nil)
     }
     @objc func donate() {
-        NSWorkspace.shared.open(URL(string: "https://ko-fi.com/hieuspaceos")!)
+        NSWorkspace.shared.open(URL(string: "https://github.com/sponsors/hieuspaceos")!)
     }
     @objc func quit() { NSApp.terminate(nil) }
 
