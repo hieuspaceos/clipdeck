@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>clipdeck</string>
+	<string>ClipDesk</string>
 	<key>CFBundleDisplayName</key>
-	<string>clipdeck</string>
+	<string>ClipDesk</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.pet.clipdeck</string>
 	<key>CFBundleExecutable</key>

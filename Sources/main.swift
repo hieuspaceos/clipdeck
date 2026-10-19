@@ -2,8 +2,7 @@ import Cocoa
 import Carbon.HIToolbox
 import SwiftUI
 
-// clipdeck — free Paste-style clipboard manager.
-// Menubar agent + bottom shelf of history cards on ⌘⇧V.
+// ClipDesk — free clipboard manager, Spotlight-style center palette.
 
 // MARK: - Store
 
@@ -52,7 +51,6 @@ struct Clip: Identifiable {
             pb.writeObjects(paths.map { NSURL(fileURLWithPath: $0) } as [NSPasteboardWriting])
         }
     }
-    /// Plain-text version of this clip (RTF / file paths flattened).
     func writePlain(to pb: NSPasteboard) {
         pb.clearContents()
         pb.setString(preview, forType: .string)
@@ -114,15 +112,13 @@ final class Store: ObservableObject {
     func paste(_ c: Clip, plain: Bool = false) {
         if plain { c.writePlain(to: .general) } else { c.write(to: .general) }
         lastChange = NSPasteboard.general.changeCount
-        let target = Shelf.shared.prevApp
-        Shelf.shared.hide(restoreFocus: false)
-        // re-activate the app the user was in, then inject ⌘V
+        let target = Palette.shared.prevApp
+        Palette.shared.hide(restoreFocus: false)
         target?.activate(options: .activateIgnoringOtherApps)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             if !AXIsProcessTrusted() {
                 let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
                 _ = AXIsProcessTrustedWithOptions(opts)
-                NSLog("clipdeck: paste needs Accessibility — showing prompt")
                 return
             }
             let src = CGEventSource(stateID: .hidSystemState)
@@ -143,13 +139,13 @@ extension NSImage {
     }
 }
 
-// MARK: - Shelf window
+// MARK: - Palette window (Spotlight-style centered)
 
-final class Shelf: NSWindow {
-    static let shared = Shelf()
+final class Palette: NSWindow {
+    static let shared = Palette()
     private var keyMon: Any?
     var prevApp: NSRunningApplication?
-    @Published var selected = 0
+    var selected = 0
     var shown = false
 
     private init() {
@@ -161,12 +157,12 @@ final class Shelf: NSWindow {
         standardWindowButton(.closeButton)?.isHidden = true
         standardWindowButton(.miniaturizeButton)?.isHidden = true
         standardWindowButton(.zoomButton)?.isHidden = true
-        isMovableByWindowBackground = false
+        isMovableByWindowBackground = true
         level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.floatingWindow)) + 2)
         isOpaque = false; backgroundColor = .clear
-        hasShadow = false
-        collectionBehavior = [.canJoinAllSpaces, .stationary]
-        contentView = NSHostingView(rootView: ShelfView())
+        hasShadow = true
+        collectionBehavior = [.canJoinAllSpaces]
+        contentView = NSHostingView(rootView: PaletteView())
     }
 
     func toggle() { shown ? hide() : show() }
@@ -174,21 +170,20 @@ final class Shelf: NSWindow {
     func show() {
         guard let s = NSScreen.main else { return }
         selected = 0
-        contentView = NSHostingView(rootView: ShelfView())
-        let h: CGFloat = 360
-        setFrame(CGRect(x: s.frame.minX, y: s.frame.minY,
-                        width: s.frame.width, height: h), display: true)
+        contentView = NSHostingView(rootView: PaletteView())
+        let w: CGFloat = 720, h: CGFloat = 460
+        setFrame(CGRect(x: s.frame.midX - w/2,
+                        y: s.frame.minY + s.frame.height * 0.62,
+                        width: w, height: h), display: true)
         alphaValue = 0
         orderFrontRegardless()
         shown = true
-        FileHandle.standardError.write("clipdeck: shelf shown at \(frame)\n".data(using: .utf8)!)
         NSAnimationContext.runAnimationGroup { c in
-            c.duration = 0.2; c.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            c.duration = 0.18; c.timingFunction = CAMediaTimingFunction(name: .easeOut)
             animator().alphaValue = 1
         }
         NSApp.activate(ignoringOtherApps: true)
         makeKeyAndOrderFront(nil)
-        // focus the search field
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             if let tf = self.contentView?.firstDescendant(of: NSTextField.self) {
                 self.makeFirstResponder(tf)
@@ -196,16 +191,16 @@ final class Shelf: NSWindow {
         }
         keyMon = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
             switch e.keyCode {
-            case 53:  Shelf.shared.hide(); return nil                    // ⎋
-            case 36:  Shelf.shared.pasteSelected(); return nil           // ⏎
-            case 51:  Shelf.shared.deleteSelected(); return nil          // ⌫
-            case 123: Shelf.shared.moveSel(-1); return nil               // ←
-            case 124: Shelf.shared.moveSel(1); return nil                // →
+            case 53:  Palette.shared.hide(); return nil
+            case 36:  Palette.shared.pasteSelected(); return nil
+            case 51:  Palette.shared.deleteSelected(); return nil
+            case 125: Palette.shared.moveSel(1); return nil    // ↓
+            case 126: Palette.shared.moveSel(-1); return nil   // ↑
             default: break
             }
             if e.modifierFlags.contains(.command), let n = Int(e.characters ?? ""),
                (1...9).contains(n) {
-                Shelf.shared.pasteIndex(n - 1); return nil
+                Palette.shared.pasteIndex(n - 1); return nil
             }
             return e
         }
@@ -216,7 +211,7 @@ final class Shelf: NSWindow {
         if let m = keyMon { NSEvent.removeMonitor(m); keyMon = nil }
         Store.shared.query = ""
         NSAnimationContext.runAnimationGroup { c in
-            c.duration = 0.15
+            c.duration = 0.12
             animator().alphaValue = 0
         } completionHandler: {
             self.orderOut(nil)
@@ -242,177 +237,8 @@ final class Shelf: NSWindow {
         let f = Store.shared.filtered
         if selected < f.count { Store.shared.delete(f[selected]); refresh() }
     }
-    func refresh() {
-        contentView = NSHostingView(rootView: ShelfView())
-    }
-    func refreshSoon() {
-        DispatchQueue.main.async { self.refresh() }
-    }
-}
-
-// MARK: - SwiftUI UI
-
-struct ShelfView: View {
-    @ObservedObject var store = Store.shared
-    var body: some View {
-        VStack(spacing: 0) {
-            // header: search + count
-            HStack(spacing: 14) {
-                HStack(spacing: 10) {
-                    Image(systemName: "doc.on.clipboard")
-                        .font(.system(size: 17, weight: .semibold))
-                    Text("clipdeck").font(.system(size: 15, weight: .bold))
-                }
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.tertiary)
-                    TextField("Search clipboard…", text: $store.query)
-                        .textFieldStyle(.plain).font(.system(size: 15))
-                }
-                .padding(.horizontal, 12).padding(.vertical, 8)
-                .background(RoundedRectangle(cornerRadius: 9).fill(.quaternary))
-                Text("\(store.items.count) items")
-                    .font(.callout).foregroundStyle(.secondary).monospacedDigit()
-            }
-            .padding(.horizontal, 26).padding(.top, 16).padding(.bottom, 12)
-
-            if store.filtered.isEmpty {
-                Spacer()
-                VStack(spacing: 10) {
-                    Image(systemName: "clipboard").font(.system(size: 42))
-                        .foregroundStyle(.tertiary)
-                    Text(store.query.isEmpty ? "Copy something — it lands here"
-                                             : "No matches for “\(store.query)”")
-                        .font(.title3).foregroundStyle(.secondary)
-                }
-                Spacer()
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 16) {
-                            ForEach(Array(store.filtered.prefix(60).enumerated()),
-                                    id: \.element.id) { i, c in
-                                CardView(clip: c, index: i,
-                                         selected: i == Shelf.shared.selected)
-                                    .id(c.id)
-                                    .onTapGesture {
-                                        Shelf.shared.selected = i
-                                        Shelf.shared.pasteSelected()
-                                    }
-                                    .contextMenu {
-                                        Button(c.pinned ? "Unpin" : "Pin to top") {
-                                            store.pin(c); Shelf.shared.refreshSoon()
-                                        }
-                                        Button("Paste as plain text") { store.paste(c, plain: true) }
-                                        Divider()
-                                        Button("Delete") { store.delete(c); Shelf.shared.refreshSoon() }
-                                    }
-                            }
-                        }
-                        .padding(.horizontal, 26).padding(.vertical, 6)
-                    }
-                    .onChange(of: Shelf.shared.selected) { _ in
-                        let f = store.filtered
-                        if Shelf.shared.selected < f.count {
-                            withAnimation { proxy.scrollTo(f[Shelf.shared.selected].id,
-                                                           anchor: .center) }
-                        }
-                    }
-                }
-                // hint bar
-                HStack(spacing: 18) {
-                    hint("⏎", "paste"); hint("⌘1–9", "quick paste")
-                    hint("←→", "select"); hint("⌫", "delete"); hint("⎋", "close")
-                    Spacer()
-                    if store.filtered.contains(where: { $0.pinned }) {
-                        Label("Pinned first", systemImage: "pin.fill")
-                            .font(.caption2).foregroundStyle(.orange)
-                    }
-                }
-                .padding(.horizontal, 26).padding(.vertical, 10)
-            }
-        }
-        .background(.regularMaterial)
-        .overlay(alignment: .top) { Rectangle().fill(.separator).frame(height: 0.5) }
-    }
-
-    func hint(_ key: String, _ label: String) -> some View {
-        HStack(spacing: 5) {
-            Text(key).font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .padding(.horizontal, 6).padding(.vertical, 3)
-                .background(RoundedRectangle(cornerRadius: 5).fill(.quaternary))
-            Text(label).font(.caption2).foregroundStyle(.secondary)
-        }
-    }
-}
-
-struct CardView: View {
-    let clip: Clip
-    let index: Int
-    let selected: Bool
-    @State private var hovered = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // accent strip
-            clip.accent.frame(height: 3).clipShape(
-                .rect(topLeadingRadius: 14, topTrailingRadius: 14))
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 7) {
-                    if let ic = clip.appIcon {
-                        Image(nsImage: ic).resizable().frame(width: 18, height: 18)
-                    }
-                    Text(clip.appName).font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary).lineLimit(1)
-                    Spacer()
-                    Text(clip.typeLabel)
-                        .font(.system(size: 8, weight: .bold, design: .rounded))
-                        .padding(.horizontal, 6).padding(.vertical, 2.5)
-                        .background(Capsule().fill(clip.accent.opacity(0.18)))
-                        .foregroundStyle(clip.accent)
-                    if clip.pinned {
-                        Image(systemName: "pin.fill").font(.system(size: 10))
-                            .foregroundStyle(.orange)
-                    }
-                }
-                if let img = clip.image {
-                    Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .clipShape(RoundedRectangle(cornerRadius: 7))
-                } else {
-                    Text(clip.preview)
-                        .font(.system(size: 13))
-                        .lineLimit(6)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity,
-                               alignment: .topLeading)
-                }
-                HStack {
-                    Text(clip.date, style: .time)
-                        .font(.system(size: 10)).foregroundStyle(.tertiary)
-                    Spacer()
-                    if index < 9 {
-                        Text("⌘\(index + 1)")
-                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                            .padding(.horizontal, 5).padding(.vertical, 2)
-                            .background(RoundedRectangle(cornerRadius: 4).fill(.quaternary))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .padding(12)
-        }
-        .frame(width: 240, height: 200)
-        .background(RoundedRectangle(cornerRadius: 14).fill(.regularMaterial))
-        .overlay(RoundedRectangle(cornerRadius: 14)
-            .stroke(selected ? Color.accentColor
-                             : Color.primary.opacity(hovered ? 0.18 : 0.06),
-                    lineWidth: selected ? 2.5 : 1))
-        .scaleEffect(selected ? 1.04 : (hovered ? 1.02 : 1))
-        .shadow(color: .black.opacity(selected ? 0.25 : 0.12),
-                radius: selected ? 14 : 6, y: selected ? 6 : 3)
-        .animation(.spring(duration: 0.2), value: selected)
-        .animation(.spring(duration: 0.15), value: hovered)
-        .onHover { hovered = $0 }
-    }
+    func refresh() { contentView = NSHostingView(rootView: PaletteView()) }
+    func refreshSoon() { DispatchQueue.main.async { self.refresh() } }
 }
 
 private extension NSView {
@@ -425,6 +251,203 @@ private extension NSView {
     }
 }
 
+// MARK: - SwiftUI — Spotlight palette layout
+
+struct PaletteView: View {
+    @ObservedObject var store = Store.shared
+    var body: some View {
+        VStack(spacing: 0) {
+            // big search row
+            HStack(spacing: 12) {
+                Image(systemName: "doc.on.clipboard")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(.tint)
+                TextField("Search clipboard…", text: $store.query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 21, weight: .regular))
+                if !store.query.isEmpty {
+                    Text("\(store.filtered.count)")
+                        .font(.callout).foregroundStyle(.tertiary).monospacedDigit()
+                }
+            }
+            .padding(.horizontal, 20).padding(.vertical, 16)
+
+            Divider().opacity(0.4)
+
+            if store.filtered.isEmpty {
+                Spacer()
+                VStack(spacing: 12) {
+                    Image(systemName: "clipboard")
+                        .font(.system(size: 44, weight: .light))
+                        .foregroundStyle(.quaternary)
+                    Text(store.query.isEmpty
+                         ? "Copy anything — it lands here"
+                         : "No matches for “\(store.query)”")
+                        .font(.title3).foregroundStyle(.secondary)
+                }
+                Spacer()
+            } else {
+                HStack(spacing: 0) {
+                    // left: rows
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(spacing: 2) {
+                                ForEach(Array(store.filtered.prefix(80).enumerated()),
+                                        id: \.element.id) { i, c in
+                                    RowView(clip: c, index: i,
+                                            selected: i == Palette.shared.selected)
+                                        .id(c.id)
+                                        .onTapGesture {
+                                            Palette.shared.selected = i
+                                            Palette.shared.pasteSelected()
+                                        }
+                                        .contextMenu {
+                                            Button(c.pinned ? "Unpin" : "Pin to top") {
+                                                store.pin(c); Palette.shared.refreshSoon()
+                                            }
+                                            Button("Paste as plain text") {
+                                                store.paste(c, plain: true)
+                                            }
+                                            Divider()
+                                            Button("Delete") {
+                                                store.delete(c); Palette.shared.refreshSoon()
+                                            }
+                                        }
+                                }
+                            }
+                            .padding(.vertical, 8)
+                        }
+                        .frame(width: 420)
+                        .onChange(of: Palette.shared.selected) { _ in
+                            let f = store.filtered
+                            if Palette.shared.selected < f.count {
+                                withAnimation {
+                                    proxy.scrollTo(f[Palette.shared.selected].id)
+                                }
+                            }
+                        }
+                    }
+
+                    Divider().opacity(0.4)
+
+                    // right: preview pane of selected item
+                    if Palette.shared.selected < store.filtered.count {
+                        PreviewPane(clip: store.filtered[Palette.shared.selected])
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+            }
+
+            Divider().opacity(0.4)
+            // hint footer
+            HStack(spacing: 16) {
+                hint("⏎", "paste"); hint("↑↓", "select")
+                hint("⌘1–9", "quick paste"); hint("⌫", "delete"); hint("⎋", "close")
+                Spacer()
+                if store.filtered.contains(where: { $0.pinned }) {
+                    Label("Pinned", systemImage: "pin.fill")
+                        .font(.caption2).foregroundStyle(.orange)
+                }
+            }
+            .padding(.horizontal, 20).padding(.vertical, 9)
+            .background(.quaternary.opacity(0.4))
+        }
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16)
+            .stroke(.white.opacity(0.12), lineWidth: 0.5))
+        .padding(1)
+    }
+
+    func hint(_ key: String, _ label: String) -> some View {
+        HStack(spacing: 5) {
+            Text(key).font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .padding(.horizontal, 5).padding(.vertical, 2.5)
+                .background(RoundedRectangle(cornerRadius: 4).fill(.quaternary))
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct RowView: View {
+    let clip: Clip
+    let index: Int
+    let selected: Bool
+    @State private var hovered = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            // type dot
+            Circle().fill(clip.accent).frame(width: 8, height: 8)
+            if let ic = clip.appIcon {
+                Image(nsImage: ic).resizable().frame(width: 22, height: 22)
+            } else {
+                Image(systemName: "doc").frame(width: 22)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(clip.preview)
+                    .font(.system(size: 13.5))
+                    .lineLimit(2).truncationMode(.tail)
+                Text("\(clip.appName) · \(clip.date, style: .time)")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+            Spacer(minLength: 8)
+            if clip.pinned {
+                Image(systemName: "pin.fill").font(.system(size: 10)).foregroundStyle(.orange)
+            }
+            if index < 9 {
+                Text("⌘\(index + 1)")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(.quaternary))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 9)
+        .background(RoundedRectangle(cornerRadius: 9)
+            .fill(selected ? Color.accentColor.opacity(0.22)
+                           : (hovered ? Color.primary.opacity(0.05) : .clear)))
+        .contentShape(Rectangle())
+        .onHover { hovered = $0 }
+    }
+}
+
+struct PreviewPane: View {
+    let clip: Clip
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(clip.typeLabel)
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(Capsule().fill(clip.accent.opacity(0.18)))
+                    .foregroundStyle(clip.accent)
+                Spacer()
+                Text(clip.date, style: .time).font(.caption).foregroundStyle(.tertiary)
+            }
+            if let img = clip.image {
+                Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            } else {
+                ScrollView {
+                    Text(clip.preview)
+                        .font(.system(size: 13))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+            }
+            Spacer()
+            HStack {
+                if let ic = clip.appIcon {
+                    Image(nsImage: ic).resizable().frame(width: 16, height: 16)
+                }
+                Text(clip.appName).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(16)
+    }
+}
+
 // MARK: - Hotkey + app
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -433,27 +456,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        _ = Shelf.shared            // prewarm — its init builds ShelfView
+        _ = Palette.shared
         Store.shared.start()
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         status.button?.image = NSImage(systemSymbolName: "doc.on.clipboard",
-                                       accessibilityDescription: "clipdeck")
+                                       accessibilityDescription: "ClipDesk")
         let m = NSMenu()
-        let show = NSMenuItem(title: "Show clipdeck", action: #selector(toggle), keyEquivalent: "v")
+        let show = NSMenuItem(title: "Show ClipDesk", action: #selector(toggle), keyEquivalent: "v")
         show.keyEquivalentModifierMask = [.command, .shift]
         m.addItem(show)
         m.addItem(.separator())
         m.addItem(NSMenuItem(title: "Clear History (keep pinned)",
                              action: #selector(clear), keyEquivalent: ""))
         m.addItem(.separator())
-        m.addItem(NSMenuItem(title: "Quit clipdeck", action: #selector(quit), keyEquivalent: "q"))
+        m.addItem(NSMenuItem(title: "Quit ClipDesk", action: #selector(quit), keyEquivalent: "q"))
         status.menu = m
         installHotkey()
     }
 
     @objc func toggle() {
-        Shelf.shared.prevApp = NSWorkspace.shared.frontmostApplication
-        Shelf.shared.toggle()
+        Palette.shared.prevApp = NSWorkspace.shared.frontmostApplication
+        Palette.shared.toggle()
     }
     @objc func clear() { Store.shared.clearUnpinned() }
     @objc func quit() { NSApp.terminate(nil) }
@@ -462,17 +485,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var t = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                               eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
-            FileHandle.standardError.write("clipdeck: hotkey fired\n".data(using: .utf8)!)
             DispatchQueue.main.async {
-                Shelf.shared.prevApp = NSWorkspace.shared.frontmostApplication
-                Shelf.shared.toggle()
+                Palette.shared.prevApp = NSWorkspace.shared.frontmostApplication
+                Palette.shared.toggle()
             }
             return noErr
         }, 1, &t, nil, nil)
-        let id = EventHotKeyID(signature: OSType(0x70617374), id: 1) // 'past'
-        let err = RegisterEventHotKey(UInt32(kVK_ANSI_V), UInt32(cmdKey | shiftKey), id,
+        let id = EventHotKeyID(signature: OSType(0x636c6970), id: 1) // 'clip'
+        RegisterEventHotKey(UInt32(kVK_ANSI_V), UInt32(cmdKey | shiftKey), id,
                             GetApplicationEventTarget(), 0, &hotkey)
-        FileHandle.standardError.write("clipdeck: RegisterEventHotKey -> \(err)\n".data(using: .utf8)!)
     }
 }
 
