@@ -4,6 +4,19 @@ A free, lightweight clipboard manager for macOS — the Paste-app-style
 workflow without the subscription. Menubar agent (no Dock icon), Swift +
 AppKit/SwiftUI, zero third-party dependencies.
 
+## Install
+
+**Homebrew (recommended)**
+
+```sh
+brew tap hieuspaceos/suite && brew trust hieuspaceos/suite
+brew install --cask clipspot
+```
+
+**Manual** — grab the DMG from
+[Releases](https://github.com/hieuspaceos/clipspot/releases/latest), drag into
+/Applications, right-click → Open once (ad-hoc signed).
+
 ## Features
 
 - **⌘⇧V shelf** — a borderless panel slides up along the bottom of the
