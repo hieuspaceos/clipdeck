@@ -1,63 +1,48 @@
 import Cocoa
 
-// Generates AppIcon.iconset PNGs: rounded blue gradient with a
-// viewfinder bracket glyph. Usage: swift make_icon.swift <outdir>
+// paster icon: rounded teal gradient + stacked clipboard cards glyph.
 
-let outdir = CommandLine.arguments[1]
-let sizes: [(String, Int)] = [
-    ("icon_16x16", 16), ("icon_16x16@2x", 32),
-    ("icon_32x32", 32), ("icon_32x32@2x", 64),
-    ("icon_128x128", 128), ("icon_128x128@2x", 256),
-    ("icon_256x256", 256), ("icon_256x256@2x", 512),
-    ("icon_512x512", 512), ("icon_512x512@2x", 1024),
-]
-
-for (name, px) in sizes {
-    let s = CGFloat(px)
-    let img = NSImage(size: NSSize(width: s, height: s))
+let out = CommandLine.arguments[1]
+for s in [16, 32, 64, 128, 256, 512, 1024] {
+    let f = CGFloat(s)
+    let img = NSImage(size: NSSize(width: f, height: f))
     img.lockFocus()
-    let ctx = NSGraphicsContext.current!.cgContext
+    guard let ctx = NSGraphicsContext.current?.cgContext else { continue }
 
-    // Rounded-rect gradient background (blue → cyan), macOS icon shape.
-    let inset = s * 0.02
-    let rect = CGRect(x: inset, y: inset, width: s - 2 * inset, height: s - 2 * inset)
-    let radius = s * 0.22
-    let path = CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+    let r = CGRect(x: f*0.03, y: f*0.03, width: f*0.94, height: f*0.94)
     ctx.saveGState()
-    ctx.addPath(path)
+    ctx.addPath(CGPath(roundedRect: r, cornerWidth: f*0.22, cornerHeight: f*0.22,
+                       transform: nil))
     ctx.clip()
-    let colors = [CGColor(red: 0.15, green: 0.45, blue: 0.95, alpha: 1),
-                  CGColor(red: 0.10, green: 0.75, blue: 0.90, alpha: 1)]
     let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                          colors: colors as CFArray, locations: [0, 1])!
-    ctx.drawLinearGradient(grad,
-                           start: CGPoint(x: rect.minX, y: rect.maxY),
-                           end: CGPoint(x: rect.maxX, y: rect.minY), options: [])
+        colors: [CGColor(red: 0.05, green: 0.75, blue: 0.75, alpha: 1),
+                 CGColor(red: 0.1, green: 0.45, blue: 0.95, alpha: 1)] as CFArray,
+        locations: [0, 1])!
+    ctx.drawLinearGradient(grad, start: .zero, end: CGPoint(x: f, y: f), options: [])
     ctx.restoreGState()
 
-    // Viewfinder brackets: white strokes at 4 corners.
-    ctx.setStrokeColor(CGColor(red: 1, green: 1, blue: 1, alpha: 0.95))
-    ctx.setLineWidth(max(1, s * 0.06))
-    ctx.setLineCap(.round)
-    let arm = s * 0.18, m = s * 0.22
-    let corners: [(CGPoint, CGPoint, CGPoint)] = [
-        (CGPoint(x: m, y: m + arm), CGPoint(x: m, y: m), CGPoint(x: m + arm, y: m)),
-        (CGPoint(x: s - m - arm, y: m), CGPoint(x: s - m, y: m), CGPoint(x: s - m, y: m + arm)),
-        (CGPoint(x: m, y: s - m - arm), CGPoint(x: m, y: s - m), CGPoint(x: m + arm, y: s - m)),
-        (CGPoint(x: s - m - arm, y: s - m), CGPoint(x: s - m, y: s - m), CGPoint(x: s - m, y: s - m - arm)),
-    ]
-    for (a, c, b) in corners {
-        ctx.move(to: a); ctx.addLine(to: c); ctx.addLine(to: b)
-        ctx.strokePath()
+    // two stacked "cards" (clipboard history metaphor)
+    ctx.setFillColor(CGColor(gray: 1, alpha: 0.35))
+    let back = CGRect(x: f*0.32, y: f*0.22, width: f*0.42, height: f*0.5)
+    ctx.addPath(CGPath(roundedRect: back, cornerWidth: f*0.05, cornerHeight: f*0.05, transform: nil))
+    ctx.fillPath()
+    ctx.setFillColor(CGColor(gray: 1, alpha: 0.95))
+    let front = CGRect(x: f*0.24, y: f*0.16, width: f*0.42, height: f*0.5)
+    ctx.addPath(CGPath(roundedRect: front, cornerWidth: f*0.05, cornerHeight: f*0.05, transform: nil))
+    ctx.fillPath()
+    // text lines on front card
+    ctx.setFillColor(CGColor(red: 0.1, green: 0.45, blue: 0.7, alpha: 1))
+    for i in 0..<3 {
+        let ly = front.maxY - f*0.1 - CGFloat(i) * f*0.09
+        ctx.fill(CGRect(x: front.minX + f*0.06, y: ly,
+                        width: front.width - f*0.12 - CGFloat(i)*f*0.06, height: f*0.035))
     }
-    // Center dot.
-    ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 0.95))
-    ctx.fillEllipse(in: CGRect(x: s / 2 - s * 0.05, y: s / 2 - s * 0.05,
-                               width: s * 0.10, height: s * 0.10))
 
     img.unlockFocus()
-    let rep = NSBitmapImageRep(data: img.tiffRepresentation!)!
-    let png = rep.representation(using: .png, properties: [:])!
-    try! png.write(to: URL(fileURLWithPath: "\(outdir)/\(name).png"))
+    if let t = img.tiffRepresentation,
+       let rep = NSBitmapImageRep(data: t),
+       let png = rep.representation(using: .png, properties: [:]) {
+        let name = s == 1024 ? "icon_512x512@2x.png" : "icon_\(s)x\(s).png"
+        try? png.write(to: URL(fileURLWithPath: "\(out)/\(name)"))
+    }
 }
-print("iconset written to \(outdir)")
