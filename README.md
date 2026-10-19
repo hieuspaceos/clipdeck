@@ -45,3 +45,22 @@ Requires Xcode toolchain, arm64, macOS 14+.
   approximates.
 - `paste as plain text` currently pastes the item as-is; RTF flattening
   is a TODO.
+## Security & trust
+
+- **Open source** — every byte of the release binary is produced from the
+  commit you can read, by GitHub Actions (see the workflow run linked in
+  each release). No opaque build steps.
+- **Checksums** — every release ships `ClipSpot.dmg.sha256`. Verify:
+  ```sh
+  shasum -a 256 ClipSpot.dmg
+  ```
+- **No telemetry, no account, no network calls** — the app works fully
+  offline; nothing leaves your Mac.
+- **Permissions** — ClipSpot asks for none required — reads the pasteboard, which is a public API
+  and nothing else.
+- **Ad-hoc signed** — not yet notarized (needs a paid Apple Developer
+  account). On first launch macOS shows "cannot be opened because the
+  developer cannot be verified" — right-click → **Open** once, then it
+  runs normally forever after.
+- **Prefer building yourself?** `git clone`, `make`, `make run` —
+  no external dependencies, readable in one sitting.
