@@ -6,37 +6,63 @@ import SwiftUI
 
 // MARK: - Store
 
-struct Clip: Identifiable {
-    let id = UUID()
-    let date = Date()
+struct Clip: Identifiable, Codable {
+    let id: UUID
+    let date: Date
     let kind: Kind
-    enum Kind { case text(String), image(Data), file([String]) }
+    enum Kind { case text(String), image(Data), file([String]), imageRef(String) }
     var pinned = false
-    var appIcon: NSImage?
+    var sourceAppBundleID: String?
     var appName: String = ""
+
+    init(id: UUID = UUID(), date: Date = Date(), kind: Kind,
+         pinned: Bool = false, sourceAppBundleID: String? = nil,
+         appName: String = "") {
+        self.id = id; self.date = date; self.kind = kind
+        self.pinned = pinned
+        self.sourceAppBundleID = sourceAppBundleID
+        self.appName = appName
+    }
 
     var preview: String {
         switch kind {
         case .text(let s):  return String(s.prefix(400))
-        case .image:        return "Image"
+        case .image, .imageRef: return "Image"
         case .file(let f):  return f.map { ($0 as NSString).lastPathComponent }.joined(separator: ", ")
         }
     }
+
+    /// Full image — decoded from in-memory bytes or disk; never cached here.
     var image: NSImage? {
-        if case .image(let d) = kind { return NSImage(data: d) }
-        return nil
+        imageData.flatMap { NSImage(data: $0) }
     }
+
+    /// Small preview (≤320px) — decoded once, cached in ThumbCache.
+    var thumb: NSImage? {
+        switch kind {
+        case .image, .imageRef: return ThumbCache.shared.image(for: self)
+        default: return nil
+        }
+    }
+
+    var appIcon: NSImage? {
+        guard let bid = sourceAppBundleID,
+              let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bid)
+        else { return nil }
+        return NSWorkspace.shared.icon(forFile: url.path)
+    }
+
     var typeLabel: String {
         switch kind {
         case .text:  return "TEXT"
-        case .image: return "IMAGE"
+        case .image, .imageRef: return "IMAGE"
         case .file:  return "FILE"
         }
     }
     var accent: Color {
         switch kind {
         case .text:  return .blue
-        case .image: return .green
+        case .image, .imageRef: return .green
         case .file:  return .orange
         }
     }
@@ -44,9 +70,13 @@ struct Clip: Identifiable {
         pb.clearContents()
         switch kind {
         case .text(let s):  pb.setString(s, forType: .string)
-        case .image(let d):
-            pb.setData(d, forType: .tiff)
-            if let img = NSImage(data: d), let png = img.pngData { pb.setData(png, forType: .png) }
+        case .image, .imageRef:
+            if let d = imageData {
+                pb.setData(d, forType: .tiff)
+                if let img = NSImage(data: d), let png = img.pngData {
+                    pb.setData(png, forType: .png)
+                }
+            }
         case .file(let paths):
             pb.writeObjects(paths.map { NSURL(fileURLWithPath: $0) } as [NSPasteboardWriting])
         }
@@ -55,16 +85,98 @@ struct Clip: Identifiable {
         pb.clearContents()
         pb.setString(preview, forType: .string)
     }
+
+    /// Full-resolution image bytes — in-memory payload or lazy disk read.
+    var imageData: Data? {
+        switch kind {
+        case .image(let d): return d
+        case .imageRef(let n):
+            return try? Data(contentsOf:
+                Store.imagesDir.appendingPathComponent(n))
+        default: return nil
+        }
+    }
+
+    // MARK: Codable
+    enum CodingKeys: String, CodingKey {
+        case id, date, type, payload, pinned, appName, sourceAppBundleID
+    }
+    init(from dec: Decoder) throws {
+        let c = try dec.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        date = try c.decode(Date.self, forKey: .date)
+        pinned = try c.decode(Bool.self, forKey: .pinned)
+        appName = try c.decode(String.self, forKey: .appName)
+        sourceAppBundleID = try c.decodeIfPresent(String.self, forKey: .sourceAppBundleID)
+        let type = try c.decode(String.self, forKey: .type)
+        switch type {
+        case "text":  kind = .text(try c.decode(String.self, forKey: .payload))
+        case "file":  kind = .file(try c.decode([String].self, forKey: .payload))
+        case "image":
+            // payload = filename; full bytes lazy-loaded from images/ dir
+            let name = try c.decode(String.self, forKey: .payload)
+            kind = .imageRef(name)
+        default: throw DecodingError.dataCorruptedError(forKey: .type, in: c,
+            debugDescription: "unknown clip type \(type)")
+        }
+    }
+    func encode(to enc: Encoder) throws {
+        var c = enc.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(date, forKey: .date)
+        try c.encode(pinned, forKey: .pinned)
+        try c.encode(appName, forKey: .appName)
+        try c.encodeIfPresent(sourceAppBundleID, forKey: .sourceAppBundleID)
+        switch kind {
+        case .text(let t):  try c.encode("text", forKey: .type); try c.encode(t, forKey: .payload)
+        case .file(let f):  try c.encode("file", forKey: .type); try c.encode(f, forKey: .payload)
+        case .image(let d):
+            let name = id.uuidString + ".tiff"
+            try? d.write(to: Store.imagesDir.appendingPathComponent(name))
+            try c.encode("image", forKey: .type); try c.encode(name, forKey: .payload)
+        case .imageRef(let n):
+            try c.encode("image", forKey: .type); try c.encode(n, forKey: .payload)
+        }
+    }
+}
+/// Caches ≤320px JPEG thumbs per clip id — rows/preview never decode TIFFs.
+final class ThumbCache {
+    static let shared = ThumbCache()
+    private var cache: [UUID: NSImage] = [:]
+    func image(for c: Clip) -> NSImage? {
+        if let i = cache[c.id] { return i }
+        guard let d = c.imageData, let full = NSImage(data: d) else { return nil }
+        let z: CGFloat = 320 / max(full.size.width, full.size.height)
+        let t = z < 1 ? NSImage(size: NSSize(width: full.size.width * z,
+                                             height: full.size.height * z)) : full
+        if z < 1 {
+            t.lockFocus()
+            full.draw(in: NSRect(origin: .zero, size: t.size))
+            t.unlockFocus()
+        }
+        cache[c.id] = t
+        return t
+    }
 }
 
 final class Store: ObservableObject {
     static let shared = Store()
+    @Published var selected = 0
+
+    static let supportDir: URL = {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                            in: .userDomainMask)[0]
+        return base.appendingPathComponent("ClipDeck", isDirectory: true)
+    }()
+    static let imagesDir = supportDir.appendingPathComponent("images", isDirectory: true)
+    static let historyURL = supportDir.appendingPathComponent("history.json")
     @Published private(set) var items: [Clip] = []
     @Published var query = ""
     var capacity = 200
     private var ignoredApps = Set<String>()
     private var lastChange = NSPasteboard.general.changeCount
-    private var timer: Timer?
+    private(set) var timer: Timer?
+    private var idle = true
 
     var filtered: [Clip] {
         let q = query.lowercased()
@@ -74,7 +186,52 @@ final class Store: ObservableObject {
     }
 
     func start() {
-        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in self.poll() }
+        try? FileManager.default.createDirectory(at: Store.imagesDir,
+                                                 withIntermediateDirectories: true)
+        load()
+        reschedule(idle: true)
+    }
+
+    /// 0.25 s while the palette is open, 1.0 s idle — power-friendly.
+    func setPaletteOpen(_ open: Bool) {
+        guard open != !idle else { reschedule(idle: !open); return }
+    }
+    private func reschedule(idle nowIdle: Bool) {
+        idle = nowIdle
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: nowIdle ? 1.0 : 0.25,
+                                     repeats: true) { _ in self.poll() }
+        timer?.tolerance = 0.3
+    }
+
+    // MARK: persistence
+    private var flushWork: DispatchWorkItem?
+    func flush() {
+        flushWork?.cancel()
+        let w = DispatchWorkItem { self.writeNow() }
+        flushWork = w
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5,
+                                                       execute: w)
+    }
+    func flushNow() { flushWork?.cancel(); writeNow() }
+    private func writeNow() {
+        let data = try? JSONEncoder().encode(items)
+        guard let data else { return }
+        let tmp = Store.historyURL.appendingPathExtension("tmp")
+        try? data.write(to: tmp)
+        let fm = FileManager.default
+        if fm.fileExists(atPath: Store.historyURL.path) {
+            _ = try? fm.replaceItemAt(Store.historyURL, withItemAt: tmp)
+        } else {
+            try? fm.moveItem(at: tmp, to: Store.historyURL)
+        }
+    }
+    private func load() {
+        guard let data = try? Data(contentsOf: Store.historyURL),
+              let list = try? JSONDecoder().decode([Clip].self, from: data)
+        else { return }
+        items = list
+        lastChange = NSPasteboard.general.changeCount
     }
 
     private func poll() {
@@ -85,14 +242,14 @@ final class Store: ObservableObject {
         if let bid = front?.bundleIdentifier, ignoredApps.contains(bid) { return }
         var clip: Clip?
         if let s = pb.string(forType: .string), !s.isEmpty {
-            clip = Clip(kind: .text(s))
+            clip = Clip(kind: .text(String(s.prefix(2000))))
         } else if let urls = pb.readObjects(forClasses: [NSURL.self]) as? [URL], !urls.isEmpty {
             clip = Clip(kind: .file(urls.map(\.path)))
         } else if let d = pb.data(forType: .tiff) {
             clip = Clip(kind: .image(d))
         }
         guard var c = clip else { return }
-        c.appIcon = front?.icon
+        c.sourceAppBundleID = front?.bundleIdentifier
         c.appName = front?.localizedName ?? ""
         if let i = items.firstIndex(where: { $0.preview == c.preview }) { items.remove(at: i) }
         items.insert(c, at: 0)
@@ -101,13 +258,15 @@ final class Store: ObservableObject {
            let idx = items.firstIndex(where: { $0.id == last.id }) {
             items.remove(at: idx)
         }
+        flush()
     }
 
     func pin(_ c: Clip) {
         if let i = items.firstIndex(where: { $0.id == c.id }) { items[i].pinned.toggle() }
+        flush()
     }
-    func delete(_ c: Clip) { items.removeAll { $0.id == c.id } }
-    func clearUnpinned() { items.removeAll { !$0.pinned } }
+    func delete(_ c: Clip) { items.removeAll { $0.id == c.id }; flush() }
+    func clearUnpinned() { items.removeAll { !$0.pinned }; flush() }
 
     func paste(_ c: Clip, plain: Bool = false) {
         if plain { c.writePlain(to: .general) } else { c.write(to: .general) }
@@ -146,7 +305,6 @@ final class Palette: NSWindow {
     private var keyMon: Any?
     private var globalMon: Any?
     var prevApp: NSRunningApplication?
-    var selected = 0
     var shown = false
 
     private init() {
@@ -170,15 +328,31 @@ final class Palette: NSWindow {
 
     func show() {
         guard let s = NSScreen.main else { return }
-        selected = 0
-        contentView = NSHostingView(rootView: PaletteView())
+        Store.shared.selected = 0
         let w: CGFloat = 720, h: CGFloat = 460
         setFrame(CGRect(x: s.frame.midX - w/2,
                         y: s.frame.minY + s.frame.height * 0.62,
                         width: w, height: h), display: true)
         alphaValue = 0
         orderFrontRegardless()
+        let t0 = CFAbsoluteTimeGetCurrent()
         shown = true
+        Store.shared.setPaletteOpen(true)
+        if CommandLine.arguments.contains("--bench") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                var info = mach_task_basic_info()
+                var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size)/4
+                withUnsafeMutablePointer(to: &info) { p in
+                    p.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { ip in
+                        task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), ip, &count)
+                    }
+                }
+                FileHandle.standardError.write(
+                    String(format: "clipdeck bench: show %.0fms  rss %.1fMB\n",
+                           ms, Double(info.resident_size)/1048576).data(using:.utf8)!)
+            }
+        }
         NSAnimationContext.runAnimationGroup { c in
             c.duration = 0.18; c.timingFunction = CAMediaTimingFunction(name: .easeOut)
             animator().alphaValue = 1
@@ -221,6 +395,7 @@ final class Palette: NSWindow {
 
     func hide(restoreFocus: Bool = true) {
         shown = false
+        Store.shared.setPaletteOpen(false)
         NotificationCenter.default.removeObserver(self,
             name: NSWindow.didResignKeyNotification, object: self)
         if let m = keyMon { NSEvent.removeMonitor(m); keyMon = nil }
@@ -239,11 +414,11 @@ final class Palette: NSWindow {
 
     func moveSel(_ d: Int) {
         let n = Store.shared.filtered.count
-        if n > 0 { selected = (selected + d + n) % n; refresh() }
+        if n > 0 { Store.shared.selected = (Store.shared.selected + d + n) % n }
     }
     func pasteSelected() {
         let f = Store.shared.filtered
-        if selected < f.count { Store.shared.paste(f[selected]) }
+        if Store.shared.selected < f.count { Store.shared.paste(f[Store.shared.selected]) }
     }
     func pasteIndex(_ i: Int) {
         let f = Store.shared.filtered
@@ -251,10 +426,8 @@ final class Palette: NSWindow {
     }
     func deleteSelected() {
         let f = Store.shared.filtered
-        if selected < f.count { Store.shared.delete(f[selected]); refresh() }
+        if Store.shared.selected < f.count { Store.shared.delete(f[Store.shared.selected]) }
     }
-    func refresh() { contentView = NSHostingView(rootView: PaletteView()) }
-    func refreshSoon() { DispatchQueue.main.async { self.refresh() } }
 }
 
 private extension NSView {
@@ -311,22 +484,22 @@ struct PaletteView: View {
                                 ForEach(Array(store.filtered.prefix(80).enumerated()),
                                         id: \.element.id) { i, c in
                                     RowView(clip: c, index: i,
-                                            selected: i == Palette.shared.selected)
+                                            selected: i == Store.shared.selected)
                                         .id(c.id)
                                         .onTapGesture {
-                                            Palette.shared.selected = i
+                                            Store.shared.selected = i
                                             Palette.shared.pasteSelected()
                                         }
                                         .contextMenu {
                                             Button(c.pinned ? "Unpin" : "Pin to top") {
-                                                store.pin(c); Palette.shared.refreshSoon()
+                                                store.pin(c)
                                             }
                                             Button("Paste as plain text") {
                                                 store.paste(c, plain: true)
                                             }
                                             Divider()
                                             Button("Delete") {
-                                                store.delete(c); Palette.shared.refreshSoon()
+                                                store.delete(c)
                                             }
                                         }
                                 }
@@ -334,11 +507,11 @@ struct PaletteView: View {
                             .padding(.vertical, 8)
                         }
                         .frame(width: 420)
-                        .onChange(of: Palette.shared.selected) { _ in
+                        .onChange(of: Store.shared.selected) { _ in
                             let f = store.filtered
-                            if Palette.shared.selected < f.count {
+                            if Store.shared.selected < f.count {
                                 withAnimation {
-                                    proxy.scrollTo(f[Palette.shared.selected].id)
+                                    proxy.scrollTo(f[Store.shared.selected].id)
                                 }
                             }
                         }
@@ -347,8 +520,8 @@ struct PaletteView: View {
                     Divider().opacity(0.4)
 
                     // right: preview pane of selected item
-                    if Palette.shared.selected < store.filtered.count {
-                        PreviewPane(clip: store.filtered[Palette.shared.selected])
+                    if Store.shared.selected < store.filtered.count {
+                        PreviewPane(clip: store.filtered[Store.shared.selected])
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
@@ -441,7 +614,7 @@ struct PreviewPane: View {
                 Spacer()
                 Text(clip.date, style: .time).font(.caption).foregroundStyle(.tertiary)
             }
-            if let img = clip.image {
+            if let img = clip.thumb {
                 Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             } else {
@@ -581,6 +754,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWin?.makeKeyAndOrderFront(nil)
     }
     @objc func quit() { NSApp.terminate(nil) }
+
+    func applicationWillTerminate(_ n: Notification) {
+        Store.shared.timer?.invalidate()
+        Store.shared.flushNow()
+    }
 
     private func installHotkey() {
         var t = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
