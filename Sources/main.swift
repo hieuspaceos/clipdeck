@@ -145,7 +145,14 @@ final class Shelf: NSWindow {
 
     private init() {
         super.init(contentRect: .zero,
-                   styleMask: [.borderless], backing: .buffered, defer: false)
+                   styleMask: [.titled, .fullSizeContentView],
+                   backing: .buffered, defer: false)
+        titlebarAppearsTransparent = true
+        titleVisibility = .hidden
+        standardWindowButton(.closeButton)?.isHidden = true
+        standardWindowButton(.miniaturizeButton)?.isHidden = true
+        standardWindowButton(.zoomButton)?.isHidden = true
+        isMovableByWindowBackground = false
         level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.floatingWindow)) + 2)
         isOpaque = false; backgroundColor = .clear
         hasShadow = false
@@ -171,6 +178,13 @@ final class Shelf: NSWindow {
             animator().alphaValue = 1
         }
         NSApp.activate(ignoringOtherApps: true)
+        makeKeyAndOrderFront(nil)
+        // focus the search field
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            if let tf = self.contentView?.firstDescendant(of: NSTextField.self) {
+                self.makeFirstResponder(tf)
+            }
+        }
         keyMon = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
             switch e.keyCode {
             case 53:  Shelf.shared.hide(); return nil                    // ⎋
@@ -219,6 +233,9 @@ final class Shelf: NSWindow {
     }
     func refresh() {
         contentView = NSHostingView(rootView: ShelfView())
+    }
+    func refreshSoon() {
+        DispatchQueue.main.async { self.refresh() }
     }
 }
 
@@ -272,11 +289,11 @@ struct ShelfView: View {
                                     }
                                     .contextMenu {
                                         Button(c.pinned ? "Unpin" : "Pin to top") {
-                                            store.pin(c); Shelf.shared.refresh()
+                                            store.pin(c); Shelf.shared.refreshSoon()
                                         }
                                         Button("Paste as plain text") { store.paste(c, plain: true) }
                                         Divider()
-                                        Button("Delete") { store.delete(c); Shelf.shared.refresh() }
+                                        Button("Delete") { store.delete(c); Shelf.shared.refreshSoon() }
                                     }
                             }
                         }
@@ -387,6 +404,16 @@ struct CardView: View {
     }
 }
 
+private extension NSView {
+    func firstDescendant<T: NSView>(of type: T.Type) -> T? {
+        for v in subviews {
+            if let m = v as? T { return m }
+            if let d = v.firstDescendant(of: type) { return d }
+        }
+        return nil
+    }
+}
+
 // MARK: - Hotkey + app
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -395,6 +422,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        _ = Shelf.shared            // prewarm — its init builds ShelfView
         Store.shared.start()
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         status.button?.image = NSImage(systemSymbolName: "doc.on.clipboard",
