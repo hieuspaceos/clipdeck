@@ -14,14 +14,18 @@ struct Clip: Identifiable, Codable {
     var pinned = false
     var sourceAppBundleID: String?
     var appName: String = ""
+    /// Stable content fingerprint (FNV-1a) set at capture — lets dedupe
+    /// compare items with zero disk I/O. nil for pre-hash history entries.
+    var contentHash: UInt64?
 
     init(id: UUID = UUID(), date: Date = Date(), kind: Kind,
          pinned: Bool = false, sourceAppBundleID: String? = nil,
-         appName: String = "") {
+         appName: String = "", contentHash: UInt64? = nil) {
         self.id = id; self.date = date; self.kind = kind
         self.pinned = pinned
         self.sourceAppBundleID = sourceAppBundleID
         self.appName = appName
+        self.contentHash = contentHash
     }
 
     var preview: String {
@@ -46,10 +50,8 @@ struct Clip: Identifiable, Codable {
     }
 
     var appIcon: NSImage? {
-        guard let bid = sourceAppBundleID,
-              let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bid)
-        else { return nil }
-        return NSWorkspace.shared.icon(forFile: url.path)
+        guard let bid = sourceAppBundleID else { return nil }
+        return AppIconCache.shared.icon(for: bid)
     }
 
     var typeLabel: String {
@@ -72,28 +74,68 @@ struct Clip: Identifiable, Codable {
         case .text(let s):  pb.setString(s, forType: .string)
         case .image, .imageRef:
             if let d = imageData {
-                pb.setData(d, forType: .tiff)
-                if let img = NSImage(data: d), let png = img.pngData {
-                    pb.setData(png, forType: .png)
-                }
+                // Stored bytes are PNG (in-memory .image payloads are TIFF).
+                let tiff = Clip.isTIFF(d) ? d : NSImage(data: d)?.tiffRepresentation
+                let png  = Clip.isTIFF(d) ? NSImage(data: d)?.pngData : d
+                if let tiff { pb.setData(tiff, forType: .tiff) }
+                if let png  { pb.setData(png, forType: .png) }
             }
         case .file(let paths):
             pb.writeObjects(paths.map { NSURL(fileURLWithPath: $0) } as [NSPasteboardWriting])
         }
     }
     /// Content-level equality — preview is NOT enough (all images preview "Image").
+    /// Fast path: both clips carry a capture-time hash → pure integer compare,
+    /// zero disk I/O. Legacy nil-hash clips only read file bytes when kinds and
+    /// byte sizes already match — never a Data(contentsOf:) per candidate in
+    /// poll()'s dedupe scan.
     func sameContent(as o: Clip) -> Bool {
+        if let h = contentHash, let oh = o.contentHash { return h == oh }
+        let dir = Store.imagesDir
         switch (kind, o.kind) {
         case (.text(let a), .text(let b)):   return a == b
         case (.file(let a), .file(let b)):   return a == b
         case (.image(let a), .image(let b)): return a == b
-        case (.imageRef(let n), .image(let d)): return (try? Data(contentsOf:
-            Store.imagesDir.appendingPathComponent(n))) == d
-        case (.image(let d), .imageRef(let n)): return d == (try? Data(contentsOf:
-            Store.imagesDir.appendingPathComponent(n)))
-        case (.imageRef(let a), .imageRef(let b)): return a == b
+        case (.imageRef(let n), .image(let d)),
+             (.image(let d), .imageRef(let n)):
+            let u = dir.appendingPathComponent(n)
+            guard (try? u.resourceValues(forKeys: [.fileSizeKey]))?.fileSize == d.count
+            else { return false }
+            return (try? Data(contentsOf: u)) == d
+        case (.imageRef(let a), .imageRef(let b)):
+            if a == b { return true }
+            guard let sa = try? dir.appendingPathComponent(a)
+                        .resourceValues(forKeys: [.fileSizeKey]).fileSize,
+                  let sb = try? dir.appendingPathComponent(b)
+                        .resourceValues(forKeys: [.fileSizeKey]).fileSize,
+                  sa == sb else { return false }
+            return (try? Data(contentsOf: dir.appendingPathComponent(a)))
+                == (try? Data(contentsOf: dir.appendingPathComponent(b)))
         default: return false
         }
+    }
+
+    /// Stable FNV-1a over payload bytes (Swift Hasher is per-run — unusable
+    /// for fingerprints persisted to history.json).
+    static func hashContent(_ d: Data) -> UInt64 {
+        var h: UInt64 = 0xcbf29ce484222325
+        for b in d { h = (h ^ UInt64(b)) &* 0x100000001b3 }
+        return h
+    }
+    static func hashContent(_ s: String) -> UInt64 { hashContent(Data(s.utf8)) }
+    /// TIFF magic: II*\0 little-endian or MM\0* big-endian.
+    static func isTIFF(_ d: Data) -> Bool {
+        d.starts(with: [0x49, 0x49, 0x2A, 0x00]) || d.starts(with: [0x4D, 0x4D, 0x00, 0x2A])
+    }
+
+    /// Last-resort image capture: write the raw TIFF to disk so history still
+    /// holds an imageRef instead of keeping a multi-MB payload in memory.
+    static func diskFallback(id: UUID, tiff d: Data, hash: UInt64) -> Clip {
+        let name = id.uuidString + ".tiff"
+        if (try? d.write(to: Store.imagesDir.appendingPathComponent(name))) != nil {
+            return Clip(id: id, kind: .imageRef(name), contentHash: hash)
+        }
+        return Clip(kind: .image(d), contentHash: hash)
     }
 
     func writePlain(to pb: NSPasteboard) {
@@ -114,7 +156,7 @@ struct Clip: Identifiable, Codable {
 
     // MARK: Codable
     enum CodingKeys: String, CodingKey {
-        case id, date, type, payload, pinned, appName, sourceAppBundleID
+        case id, date, type, payload, pinned, appName, sourceAppBundleID, contentHash
     }
     init(from dec: Decoder) throws {
         let c = try dec.container(keyedBy: CodingKeys.self)
@@ -123,6 +165,7 @@ struct Clip: Identifiable, Codable {
         pinned = try c.decode(Bool.self, forKey: .pinned)
         appName = try c.decode(String.self, forKey: .appName)
         sourceAppBundleID = try c.decodeIfPresent(String.self, forKey: .sourceAppBundleID)
+        contentHash = try c.decodeIfPresent(UInt64.self, forKey: .contentHash)
         let type = try c.decode(String.self, forKey: .type)
         switch type {
         case "text":  kind = .text(try c.decode(String.self, forKey: .payload))
@@ -142,6 +185,7 @@ struct Clip: Identifiable, Codable {
         try c.encode(pinned, forKey: .pinned)
         try c.encode(appName, forKey: .appName)
         try c.encodeIfPresent(sourceAppBundleID, forKey: .sourceAppBundleID)
+        try c.encodeIfPresent(contentHash, forKey: .contentHash)
         switch kind {
         case .text(let t):  try c.encode("text", forKey: .type); try c.encode(t, forKey: .payload)
         case .file(let f):  try c.encode("file", forKey: .type); try c.encode(f, forKey: .payload)
@@ -156,13 +200,54 @@ struct Clip: Identifiable, Codable {
         }
     }
 }
-/// Caches ≤320px JPEG thumbs per clip id — rows/preview never decode TIFFs.
+/// Caches ≤320px thumbs per clip id — NSCache-bounded (30 entries / ~40 MB)
+/// so rows/preview never accumulate full bitmaps. A small JPEG sidecar written
+/// at capture lets cache misses decode that instead of the full PNG.
 final class ThumbCache {
     static let shared = ThumbCache()
-    private var cache: [UUID: NSImage] = [:]
+    private let cache = NSCache<NSUUID, NSImage>()
+    private init() {
+        cache.countLimit = 30
+        cache.totalCostLimit = 40 * 1024 * 1024
+    }
+    static func sidecarURL(for id: UUID) -> URL {
+        Store.imagesDir.appendingPathComponent(id.uuidString + ".jpg")
+    }
+    /// Renders `img` onto white and writes a ≤320px JPEG sidecar — cheap to
+    /// decode per row, and JPEG has no alpha so flatten it first.
+    static func writeSidecar(for id: UUID, from img: NSImage) {
+        let z: CGFloat = 320 / max(img.size.width, img.size.height)
+        let sz = z < 1 ? NSSize(width: img.size.width * z,
+                                height: img.size.height * z) : img.size
+        guard sz.width > 0, sz.height > 0 else { return }
+        let t = NSImage(size: sz)
+        t.lockFocus()
+        NSColor.white.setFill()
+        NSRect(origin: .zero, size: sz).fill()
+        img.draw(in: NSRect(origin: .zero, size: sz))
+        t.unlockFocus()
+        guard let tiff = t.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let jpg = rep.representation(using: .jpeg,
+                  properties: [.compressionFactor: 0.7]) else { return }
+        try? jpg.write(to: sidecarURL(for: id))
+    }
     func image(for c: Clip) -> NSImage? {
-        if let i = cache[c.id] { return i }
-        guard let d = c.imageData, let full = NSImage(data: d) else { return nil }
+        if let i = cache.object(forKey: c.id as NSUUID) { return i }
+        // Prefer the ≤320px JPEG sidecar — no full-image decode on the path.
+        var full: NSImage?
+        if let d = try? Data(contentsOf: ThumbCache.sidecarURL(for: c.id)) {
+            full = NSImage(data: d)
+        }
+        if full == nil, let d = c.imageData {
+            full = NSImage(data: d)
+            // Legacy/no-sidecar clip: write one now so subsequent misses decode
+            // the small JPEG instead of the full-resolution PNG again.
+            if let img = full {
+                ThumbCache.writeSidecar(for: c.id, from: img)
+            }
+        }
+        guard let full else { return nil }
         let z: CGFloat = 320 / max(full.size.width, full.size.height)
         let t = z < 1 ? NSImage(size: NSSize(width: full.size.width * z,
                                              height: full.size.height * z)) : full
@@ -171,10 +256,43 @@ final class ThumbCache {
             full.draw(in: NSRect(origin: .zero, size: t.size))
             t.unlockFocus()
         }
-        cache[c.id] = t
+        // Cost in backing pixels — NSImage.size is in points, so a 320pt thumb
+        // is really 640px on a retina screen (4× the bytes).
+        var cost = Int(t.size.width * t.size.height * 4)
+        if let rep = t.representations.first {
+            cost = rep.pixelsWide * rep.pixelsHigh * 4
+        }
+        cache.setObject(t, forKey: c.id as NSUUID, cost: cost)
         return t
     }
-    func drop(id: UUID) { cache.removeValue(forKey: id) }
+    func drop(id: UUID) { cache.removeObject(forKey: id as NSUUID) }
+}
+
+/// App icons per bundleID — NSWorkspace.icon(forFile:) was called on every
+/// RowView/PreviewPane body evaluation, and its images carry reps up to 1024px.
+/// Downscale to 64px (retina-ready for 22pt rows) and cost-cap the cache.
+final class AppIconCache {
+    static let shared = AppIconCache()
+    private let cache = NSCache<NSString, NSImage>()
+    private init() {
+        cache.countLimit = 64
+        cache.totalCostLimit = 4 * 1024 * 1024
+    }
+    func icon(for bundleID: String) -> NSImage? {
+        let key = bundleID as NSString
+        if let i = cache.object(forKey: key) { return i }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+        else { return nil }
+        let src = NSWorkspace.shared.icon(forFile: url.path)
+        let i = NSImage(size: NSSize(width: 64, height: 64))
+        i.lockFocus()
+        src.draw(in: NSRect(x: 0, y: 0, width: 64, height: 64),
+                 from: NSRect(origin: .zero, size: src.size),
+                 operation: .sourceOver, fraction: 1)
+        i.unlockFocus()
+        cache.setObject(i, forKey: key, cost: 64 * 64 * 4)
+        return i
+    }
 }
 
 final class Store: ObservableObject {
@@ -212,7 +330,8 @@ final class Store: ObservableObject {
 
     /// 0.25 s while the palette is open, 1.0 s idle — power-friendly.
     func setPaletteOpen(_ open: Bool) {
-        guard open != !idle else { reschedule(idle: !open); return }
+        guard open == !idle else { return }
+        reschedule(idle: !open)
     }
     private func reschedule(idle nowIdle: Bool) {
         idle = nowIdle
@@ -262,16 +381,37 @@ final class Store: ObservableObject {
         if let bid = front?.bundleIdentifier, ignoredApps.contains(bid) { return }
         var clip: Clip?
         if let s = pb.string(forType: .string), !s.isEmpty {
-            clip = Clip(kind: .text(String(s.prefix(2000))))
+            let t = String(s.prefix(2000))
+            clip = Clip(kind: .text(t), contentHash: Clip.hashContent(t))
         } else if let urls = pb.readObjects(forClasses: [NSURL.self]) as? [URL], !urls.isEmpty {
-            clip = Clip(kind: .file(urls.map(\.path)))
+            let paths = urls.map(\.path)
+            clip = Clip(kind: .file(paths),
+                        contentHash: Clip.hashContent(paths.joined(separator: "\n")))
         } else if let d = pb.data(forType: .tiff) {
-            clip = Clip(kind: .image(d))
+            let hash = Clip.hashContent(d)
+            // Persist at capture: PNG + small JPEG sidecar to imagesDir, keep
+            // only the filename in items — never the multi-MB TIFF payload.
+            let id = UUID()
+            if let img = NSImage(data: d), let png = img.pngData {
+                let url = Store.imagesDir.appendingPathComponent(id.uuidString + ".png")
+                do {
+                    try png.write(to: url)
+                    ThumbCache.writeSidecar(for: id, from: img)
+                    clip = Clip(id: id, kind: .imageRef(id.uuidString + ".png"),
+                                contentHash: hash)
+                } catch {
+                    clip = Clip.diskFallback(id: id, tiff: d, hash: hash)
+                }
+            } else {
+                clip = Clip.diskFallback(id: id, tiff: d, hash: hash)
+            }
         }
         guard var c = clip else { return }
         c.sourceAppBundleID = front?.bundleIdentifier
         c.appName = front?.localizedName ?? ""
-        if let i = items.firstIndex(where: { $0.sameContent(as: c) }) { items.remove(at: i) }
+        if let i = items.firstIndex(where: { $0.sameContent(as: c) }) {
+            removeItem(at: i)
+        }
         items.insert(c, at: 0)
         let unpinned = items.filter { !$0.pinned }
         if unpinned.count > capacity, let last = unpinned.last,
@@ -314,6 +454,8 @@ final class Store: ObservableObject {
             try? FileManager.default.removeItem(
                 at: Store.imagesDir.appendingPathComponent(c.id.uuidString + ".png"))
         }
+        try? FileManager.default.removeItem(
+            at: ThumbCache.sidecarURL(for: c.id))
     }
 
     func paste(_ c: Clip, plain: Bool = false) {
