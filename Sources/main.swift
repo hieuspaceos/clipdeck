@@ -144,6 +144,7 @@ extension NSImage {
 final class Palette: NSWindow {
     static let shared = Palette()
     private var keyMon: Any?
+    private var globalMon: Any?
     var prevApp: NSRunningApplication?
     var selected = 0
     var shown = false
@@ -184,11 +185,15 @@ final class Palette: NSWindow {
         }
         NSApp.activate(ignoringOtherApps: true)
         makeKeyAndOrderFront(nil)
+        NotificationCenter.default.addObserver(self,
+            selector: #selector(resignedKey),
+            name: NSWindow.didResignKeyNotification, object: self)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             if let tf = self.contentView?.firstDescendant(of: NSTextField.self) {
                 self.makeFirstResponder(tf)
             }
         }
+        // local: while palette is key
         keyMon = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
             switch e.keyCode {
             case 53:  Palette.shared.hide(); return nil
@@ -204,11 +209,22 @@ final class Palette: NSWindow {
             }
             return e
         }
+        globalMon = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { e in
+            if e.keyCode == 53 { DispatchQueue.main.async { Palette.shared.hide() } }
+        }
+    }
+
+    @objc private func resignedKey() {
+        // don't hide while the AX prompt or our own click animation is in flight
+        if shown { hide() }
     }
 
     func hide(restoreFocus: Bool = true) {
         shown = false
+        NotificationCenter.default.removeObserver(self,
+            name: NSWindow.didResignKeyNotification, object: self)
         if let m = keyMon { NSEvent.removeMonitor(m); keyMon = nil }
+        if let m = globalMon { NSEvent.removeMonitor(m); globalMon = nil }
         Store.shared.query = ""
         NSAnimationContext.runAnimationGroup { c in
             c.duration = 0.12
