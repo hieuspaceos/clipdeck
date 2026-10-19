@@ -774,6 +774,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(.separator())
         m.addItem(NSMenuItem(title: "Settings…", action: #selector(settings), keyEquivalent: ","))
         m.addItem(.separator())
+        m.addItem(NSMenuItem(title: "Donate ♥",
+                             action: #selector(donate), keyEquivalent: ""))
+        m.addItem(.separator())
         m.addItem(NSMenuItem(title: "Quit ClipSpot", action: #selector(quit), keyEquivalent: "q"))
         status.menu = m
         Prefs.shared.applyMenubar()
@@ -800,6 +803,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         settingsWin?.makeKeyAndOrderFront(nil)
+    }
+    @objc func donate() {
+        NSWorkspace.shared.open(URL(string: "https://ko-fi.com/hieuspaceos")!)
     }
     @objc func quit() { NSApp.terminate(nil) }
 
