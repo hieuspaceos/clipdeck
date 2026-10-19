@@ -2,7 +2,7 @@ import Cocoa
 import Carbon.HIToolbox
 import SwiftUI
 
-// ClipDesk — free clipboard manager, Spotlight-style center palette.
+// ClipSpot — free clipboard manager, Spotlight-style center palette.
 
 // MARK: - Store
 
@@ -397,7 +397,7 @@ final class Palette: NSWindow {
                     }
                 }
                 FileHandle.standardError.write(
-                    String(format: "clipdeck bench: show %.0fms  rss %.1fMB\n",
+                    String(format: "clipspot bench: show %.0fms  rss %.1fMB\n",
                            ms, Double(info.resident_size)/1048576).data(using:.utf8)!)
             }
         }
@@ -763,9 +763,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Store.shared.start()
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         status.button?.image = NSImage(systemSymbolName: "doc.on.clipboard",
-                                       accessibilityDescription: "ClipDesk")
+                                       accessibilityDescription: "ClipSpot")
         let m = NSMenu()
-        let show = NSMenuItem(title: "Show ClipDesk", action: #selector(toggle), keyEquivalent: "v")
+        let show = NSMenuItem(title: "Show ClipSpot", action: #selector(toggle), keyEquivalent: "v")
         show.keyEquivalentModifierMask = [.command, .shift]
         m.addItem(show)
         m.addItem(.separator())
@@ -774,7 +774,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(.separator())
         m.addItem(NSMenuItem(title: "Settings…", action: #selector(settings), keyEquivalent: ","))
         m.addItem(.separator())
-        m.addItem(NSMenuItem(title: "Quit ClipDesk", action: #selector(quit), keyEquivalent: "q"))
+        m.addItem(NSMenuItem(title: "Quit ClipSpot", action: #selector(quit), keyEquivalent: "q"))
         status.menu = m
         Prefs.shared.applyMenubar()
         Prefs.shared.applyLogin()
@@ -792,7 +792,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settingsWin == nil {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 240),
                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
-            w.title = "ClipDesk Settings"
+            w.title = "ClipSpot Settings"
             w.contentView = NSHostingView(rootView: SettingsView())
             w.center()
             w.isReleasedWhenClosed = false

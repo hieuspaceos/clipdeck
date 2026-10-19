@@ -1,6 +1,6 @@
-# ClipDesk — stability, lightness, smoothness
+# ClipSpot — stability, lightness, smoothness
 
-Make ClipDesk feel like a system utility: survives restarts, opens in <120 ms,
+Make ClipSpot feel like a system utility: survives restarts, opens in <120 ms,
 uses <30 MB idle RSS, and animates at a solid 60 fps.
 
 ## Success criteria

@@ -1,4 +1,4 @@
-APP      := ClipDesk
+APP      := ClipSpot
 BUILD    := Build
 BUNDLE   := $(BUILD)/$(APP).app
 SRC      := $(wildcard Sources/*.swift)

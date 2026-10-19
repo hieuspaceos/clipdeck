@@ -1,4 +1,4 @@
-# clipdeck
+# clipspot
 
 A free, lightweight clipboard manager for macOS — the Paste-app-style
 workflow without the subscription. Menubar agent (no Dock icon), Swift +
@@ -17,12 +17,12 @@ AppKit/SwiftUI, zero third-party dependencies.
   "Clear history".
 - **Context menu** — Paste as plain text, Pin/Unpin, Delete.
 - **Dedupe** — re-copying an item moves it to the top.
-- **Menubar menu** — Show clipdeck (⌘⇧V), Clear history, Quit (⌘Q).
+- **Menubar menu** — Show clipspot (⌘⇧V), Clear history, Quit (⌘Q).
 
 ## Build & run
 
 ```sh
-make        # builds Build/clipdeck.app (ad-hoc signed)
+make        # builds Build/clipspot.app (ad-hoc signed)
 make run    # build + open
 make clean
 ```

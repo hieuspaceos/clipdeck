@@ -7,7 +7,7 @@
 - resident MB at print time
 
 ```sh
-./Build/ClipDesk.app/Contents/MacOS/ClipDeck --bench &
+./Build/ClipSpot.app/Contents/MacOS/ClipDeck --bench &
 sleep 3
 osascript -e 'tell application "System Events" to keystroke "v" using {command down, shift down}'
 # → "palette show: NNms" in stderr; relaunch for cold number.

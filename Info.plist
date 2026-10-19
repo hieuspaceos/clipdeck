@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>ClipDesk</string>
+	<string>ClipSpot</string>
 	<key>CFBundleDisplayName</key>
-	<string>ClipDesk</string>
+	<string>ClipSpot</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.pet.clipdeck</string>
+	<string>com.pet.clipspot</string>
 	<key>CFBundleExecutable</key>
-	<string>ClipDesk</string>
+	<string>ClipSpot</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -25,7 +25,7 @@
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSScreenCaptureUsageDescription</key>
-	<string>clipdeck needs Screen Recording permission to capture screenshots.</string>
+	<string>ClipSpot needs Accessibility to paste into other apps.</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 </dict>
