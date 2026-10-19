@@ -448,6 +448,72 @@ struct PreviewPane: View {
     }
 }
 
+// MARK: - Settings
+
+final class Prefs: ObservableObject {
+    static let shared = Prefs()
+    private let d = UserDefaults.standard
+
+    @Published var launchAtLogin: Bool { didSet {
+        d.set(launchAtLogin, forKey: "launchAtLogin")
+        applyLogin()
+    } }
+    @Published var hideMenubarIcon: Bool { didSet {
+        d.set(hideMenubarIcon, forKey: "hideMenubarIcon")
+        applyMenubar()
+    } }
+    @Published var capacity: Double { didSet {
+        d.set(capacity, forKey: "capacity")
+        Store.shared.capacity = Int(capacity)
+    } }
+
+    private init() {
+        d.register(defaults: ["launchAtLogin": false,
+                              "hideMenubarIcon": false, "capacity": 200.0])
+        launchAtLogin = d.bool(forKey: "launchAtLogin")
+        hideMenubarIcon = d.bool(forKey: "hideMenubarIcon")
+        capacity = d.double(forKey: "capacity")
+    }
+
+    func applyLogin() {
+        if #available(macOS 13, *) {
+            let s = SMAppService.mainApp
+            try? launchAtLogin ? s.register() : s.unregister()
+        }
+    }
+    func applyMenubar() {
+        if let b = NSApp.delegate as? AppDelegate {
+            b.status?.isVisible = !hideMenubarIcon
+        }
+    }
+}
+
+import ServiceManagement
+
+struct SettingsView: View {
+    @ObservedObject var p = Prefs.shared
+    var body: some View {
+        Form {
+            Section("General") {
+                Toggle("Launch at login", isOn: $p.launchAtLogin)
+                Toggle("Hide menubar icon (⌘⇧V still works)",
+                       isOn: $p.hideMenubarIcon)
+            }
+            Section("History") {
+                HStack {
+                    Text("Capacity")
+                    Slider(value: $p.capacity, in: 50...1000, step: 50)
+                    Text("\(Int(p.capacity))").monospacedDigit()
+                        .frame(width: 44, alignment: .trailing)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 420, height: 220)
+        .padding(10)
+    }
+}
+
 // MARK: - Hotkey + app
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -469,8 +535,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(NSMenuItem(title: "Clear History (keep pinned)",
                              action: #selector(clear), keyEquivalent: ""))
         m.addItem(.separator())
+        m.addItem(NSMenuItem(title: "Settings…", action: #selector(settings), keyEquivalent: ","))
+        m.addItem(.separator())
         m.addItem(NSMenuItem(title: "Quit ClipDesk", action: #selector(quit), keyEquivalent: "q"))
         status.menu = m
+        Prefs.shared.applyMenubar()
+        Prefs.shared.applyLogin()
         installHotkey()
     }
 
@@ -479,6 +549,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Palette.shared.toggle()
     }
     @objc func clear() { Store.shared.clearUnpinned() }
+
+    var settingsWin: NSWindow?
+    @objc func settings() {
+        if settingsWin == nil {
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 240),
+                             styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            w.title = "ClipDesk Settings"
+            w.contentView = NSHostingView(rootView: SettingsView())
+            w.center()
+            w.isReleasedWhenClosed = false
+            settingsWin = w
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWin?.makeKeyAndOrderFront(nil)
+    }
     @objc func quit() { NSApp.terminate(nil) }
 
     private func installHotkey() {
