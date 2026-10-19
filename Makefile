@@ -1,4 +1,4 @@
-APP      := paster
+APP      := clipdeck
 BUILD    := Build
 BUNDLE   := $(BUILD)/$(APP).app
 SRC      := $(wildcard Sources/*.swift)

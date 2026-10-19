@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>paster</string>
+	<string>clipdeck</string>
 	<key>CFBundleDisplayName</key>
-	<string>paster</string>
+	<string>clipdeck</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.pet.paster</string>
+	<string>com.pet.clipdeck</string>
 	<key>CFBundleExecutable</key>
-	<string>paster</string>
+	<string>clipdeck</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -25,7 +25,7 @@
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSScreenCaptureUsageDescription</key>
-	<string>paster needs Screen Recording permission to capture screenshots.</string>
+	<string>clipdeck needs Screen Recording permission to capture screenshots.</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 </dict>

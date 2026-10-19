@@ -2,7 +2,7 @@ import Cocoa
 import Carbon.HIToolbox
 import SwiftUI
 
-// paster — free Paste-style clipboard manager.
+// clipdeck — free Paste-style clipboard manager.
 // Menubar agent + bottom shelf of history cards on ⌘⇧V.
 
 // MARK: - Store
@@ -165,7 +165,7 @@ final class Shelf: NSWindow {
         alphaValue = 0
         orderFrontRegardless()
         shown = true
-        FileHandle.standardError.write("paster: shelf shown at \(frame)\n".data(using: .utf8)!)
+        FileHandle.standardError.write("clipdeck: shelf shown at \(frame)\n".data(using: .utf8)!)
         NSAnimationContext.runAnimationGroup { c in
             c.duration = 0.2; c.timingFunction = CAMediaTimingFunction(name: .easeOut)
             animator().alphaValue = 1
@@ -233,7 +233,7 @@ struct ShelfView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "doc.on.clipboard")
                         .font(.system(size: 17, weight: .semibold))
-                    Text("paster").font(.system(size: 15, weight: .bold))
+                    Text("clipdeck").font(.system(size: 15, weight: .bold))
                 }
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.tertiary)
@@ -398,16 +398,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Store.shared.start()
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         status.button?.image = NSImage(systemSymbolName: "doc.on.clipboard",
-                                       accessibilityDescription: "paster")
+                                       accessibilityDescription: "clipdeck")
         let m = NSMenu()
-        let show = NSMenuItem(title: "Show paster", action: #selector(toggle), keyEquivalent: "v")
+        let show = NSMenuItem(title: "Show clipdeck", action: #selector(toggle), keyEquivalent: "v")
         show.keyEquivalentModifierMask = [.command, .shift]
         m.addItem(show)
         m.addItem(.separator())
         m.addItem(NSMenuItem(title: "Clear History (keep pinned)",
                              action: #selector(clear), keyEquivalent: ""))
         m.addItem(.separator())
-        m.addItem(NSMenuItem(title: "Quit paster", action: #selector(quit), keyEquivalent: "q"))
+        m.addItem(NSMenuItem(title: "Quit clipdeck", action: #selector(quit), keyEquivalent: "q"))
         status.menu = m
         installHotkey()
     }
@@ -423,7 +423,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var t = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                               eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
-            FileHandle.standardError.write("paster: hotkey fired\n".data(using: .utf8)!)
+            FileHandle.standardError.write("clipdeck: hotkey fired\n".data(using: .utf8)!)
             DispatchQueue.main.async {
                 Shelf.shared.prevApp = NSWorkspace.shared.frontmostApplication
                 Shelf.shared.toggle()
@@ -433,7 +433,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let id = EventHotKeyID(signature: OSType(0x70617374), id: 1) // 'past'
         let err = RegisterEventHotKey(UInt32(kVK_ANSI_V), UInt32(cmdKey | shiftKey), id,
                             GetApplicationEventTarget(), 0, &hotkey)
-        FileHandle.standardError.write("paster: RegisterEventHotKey -> \(err)\n".data(using: .utf8)!)
+        FileHandle.standardError.write("clipdeck: RegisterEventHotKey -> \(err)\n".data(using: .utf8)!)
     }
 }
 
