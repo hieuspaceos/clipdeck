@@ -15,7 +15,7 @@ brew install --cask clipspot
 
 **Manual** — grab the DMG from
 [Releases](https://github.com/hieuspaceos/clipspot/releases/latest), drag into
-/Applications, right-click → Open once (ad-hoc signed).
+/Applications and open (Developer ID signed + notarized).
 
 ## Features
 
@@ -71,9 +71,8 @@ Requires Xcode toolchain, arm64, macOS 14+.
   offline; nothing leaves your Mac.
 - **Permissions** — ClipSpot asks for none required — reads the pasteboard, which is a public API
   and nothing else.
-- **Ad-hoc signed** — not yet notarized (needs a paid Apple Developer
-  account). On first launch macOS shows "cannot be opened because the
-  developer cannot be verified" — right-click → **Open** once, then it
-  runs normally forever after.
+- **Signed & notarized** — release builds are signed with a Developer ID
+  certificate and notarized by Apple; macOS opens them with no Gatekeeper
+  warning.
 - **Prefer building yourself?** `git clone`, `make`, `make run` —
   no external dependencies, readable in one sitting.
