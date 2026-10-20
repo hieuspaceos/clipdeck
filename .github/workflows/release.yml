@@ -102,3 +102,19 @@ jobs:
             ```sh
             shasum -a 256 ClipSpot.dmg
             ```
+
+      - name: Bump Homebrew cask
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          TAG="${{ steps.meta.outputs.tag }}"
+          VERSION="${TAG#v}"
+          SHA=$(cut -d' ' -f1 ClipSpot.dmg.sha256)
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/hieuspaceos/homebrew-suite.git" tap
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          sed -i '' "s/version \".*\"/version \"$VERSION\"/" "Casks/clipspot.rb"
+          sed -i '' "s/sha256 \".*\"/sha256 \"$SHA\"/" "Casks/clipspot.rb"
+          git add "Casks/clipspot.rb"
+          git diff --cached --quiet || { git commit -m "clipspot $TAG"; git push; }
